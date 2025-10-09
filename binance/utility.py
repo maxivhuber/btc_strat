@@ -41,46 +41,49 @@ def get_all_symbols(type):
 
 
 def download_file(base_path, file_name, date_range=None, folder=None):
-    download_path = "{}{}".format(base_path, file_name)
+    # Build the full base path with folder and date_range
+    full_base = base_path
     if folder:
-        base_path = os.path.join(folder, base_path)
+        full_base = os.path.join(folder, full_base)
     if date_range:
         date_range = date_range.replace(" ", "_")
-        base_path = os.path.join(base_path, date_range)
-    save_path = get_destination_dir(os.path.join(base_path, file_name), folder)
+        full_base = os.path.join(full_base, date_range)
+
+    save_path = os.path.join(full_base, file_name)
 
     if os.path.exists(save_path):
-        print("\nfile already exists! {}".format(save_path))
+        print(f"\nfile already exists! {save_path}")
         return
 
-    # make the directory
-    if not os.path.exists(base_path):
-        Path(get_destination_dir(base_path)).mkdir(parents=True, exist_ok=True)
+    Path(os.path.dirname(save_path)).mkdir(parents=True, exist_ok=True)
 
     try:
-        download_url = get_download_url(download_path)
+        download_url = get_download_url(base_path + file_name)
         dl_file = urllib.request.urlopen(download_url)
         length = dl_file.getheader("content-length")
         if length:
             length = int(length)
             blocksize = max(4096, length // 100)
+        else:
+            blocksize = 4096
 
+        print(f"\nFile Download: {save_path}")
         with open(save_path, "wb") as out_file:
             dl_progress = 0
-            print("\nFile Download: {}".format(save_path))
             while True:
                 buf = dl_file.read(blocksize)
                 if not buf:
                     break
                 dl_progress += len(buf)
                 out_file.write(buf)
-                done = int(50 * dl_progress / length)
-                sys.stdout.write("\r[%s%s]" % ("#" * done, "." * (50 - done)))
-                sys.stdout.flush()
+                if length:
+                    done = int(50 * dl_progress / length)
+                    sys.stdout.write(f"\r[{'#' * done}{'.' * (50 - done)}]")
+                    sys.stdout.flush()
+        print()  # newline after progress bar
 
     except urllib.error.HTTPError:
-        print("\nFile not found: {}".format(download_url))
-        pass
+        print(f"\nFile not found: {download_url}")
 
 
 def convert_to_date_object(d):

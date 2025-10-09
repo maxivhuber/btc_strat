@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
 
 
@@ -188,4 +189,36 @@ def plot_directional_change_runs(
         ),
         template="plotly_white",
     )
+    fig.show()
+
+
+def plot_z_returns(z_returns, coins):
+    """
+    Plot volatility-normalized (z-score) log returns for specified coins.
+
+    Parameters:
+    -----------
+    z_returns : pd.DataFrame
+        DataFrame with datetime index and coin symbols as columns
+    coins : list of str
+        List of coin symbols to plot (must be present in z_returns columns)
+    """
+    # Select and clean data
+    plot_df = z_returns[coins].dropna(how="any")
+    assert not plot_df.isna().any().any(), "Unexpected NaNs"
+
+    # Convert to long format for plotting
+    plot_long = plot_df.reset_index().melt(
+        id_vars="Open Time", var_name="Symbol", value_name="z_return"
+    )
+
+    # Create and show plot
+    fig = px.line(
+        plot_long,
+        x="Open Time",
+        y="z_return",
+        color="Symbol",
+        title="Volatility-normalized (z-score) log returns",
+    )
+    fig.update_layout(xaxis_title="Time", yaxis_title="z-return (σ units)")
     fig.show()
