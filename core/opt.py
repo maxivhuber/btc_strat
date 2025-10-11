@@ -104,53 +104,65 @@ def event_density_score(prices, events, d_target=0.002, alpha=2.0, beta=1.0):
     return float(np.clip(score, 0.0, 1.0))
 
 
-def up_down_asymmetry(runs, theta, squash=4.0):
+def up_down_asymmetry(runs, theta, squash=1.0):
     r"""
     Compute a *dimensionless* measure of asymmetry between upward and downward
-    trends based on their mean **overshoot strength**, normalized relative to
-    the directional‑change threshold ``theta``.
+    trends based on their mean **overshoot strength**, where overshoot is
+    already expressed in multiples of the directional-change threshold ``theta``.
+
     The function returns two values, :math:`\mu_\text{up}` and
     :math:`\mu_\text{down}`, each in the range (0, 1], where 1 indicates
     stronger (large relative) overshoots and 0 indicates weak or negligible
     continuation beyond the threshold.
+
     ---------------------------------------------------------------------------
     Concept
     ---------------------------------------------------------------------------
     Each detected *run* represents a sustained price movement following a
-    directional change. Every run has an absolute overshoot magnitude
-    ``OSV_EXT`` (e.g. the price move beyond the triggering threshold).
-    The raw overshoot is first divided by the threshold ``theta`` to yield a
-    **dimensionless ratio**
+    directional change. The ``"OSV_EXT"`` field in each run (computed by
+    ``attach_OSV_EXT_to_runs``) already encodes the **dimensionless overshoot**
+    as:
+
     .. math::
-        r_i = \frac{\text{OSV\_EXT}_i}{\theta},
-    which expresses how far price continues beyond the trigger *in multiples of
-    the threshold*.
-    The average relative overshoot for each direction is then
+        r_i = \frac{(P_{\text{ext},i} - P_{\text{ext},i-1}) / P_{\text{ext},i-1}}{\theta},
+
+    i.e., the price move between consecutive extrema expressed in **multiples of
+    the threshold** ``theta``.
+
+    The average overshoot for each direction is then:
+
     .. math::
         \bar{r}_\text{up}   = \frac{1}{N_\text{up}}\sum r_i^{(\text{up})}, \qquad
         \bar{r}_\text{down} = \frac{1}{N_\text{down}}\sum r_i^{(\text{down})}.
+
     Finally, a smooth exponential mapping converts these unbounded means into
     values between 0 and 1:
+
     .. math::
         \mu = 1 - e^{-\bar{r}/s},
+
     where :math:`s` = ``squash`` is a scaling constant controlling how fast the
     curve saturates (small s → rapid saturation; large s → gentler slope).
+
     ---------------------------------------------------------------------------
     Parameters
     ---------------------------------------------------------------------------
     runs : list[dict]
-        Sequence of runs produced by the directional‑change algorithm.
-        Each entry must contain a numeric ``"OSV_EXT"`` and a string key
-        ``"type"`` equal to either ``"upward_run"`` or ``"downward_run"``.
+        Sequence of runs produced by the directional-change algorithm **after**
+        calling ``attach_OSV_EXT_to_runs``. Each entry must contain:
+        - ``"OSV_EXT"``: a float representing overshoot in units of ``theta``
+          (i.e., already normalized)
+        - ``"type"``: either ``"upward_run"`` or ``"downward_run"``
     theta : float
-        The directional‑change threshold used to create the runs.  It defines
-        the reference magnitude for normalization and ensures the metric is
-        dimensionless.
+        The directional-change threshold used to generate the runs and compute
+        ``OSV_EXT``. This parameter is retained for API consistency and clarity,
+        but **is not used in computation** (since normalization is already done).
     squash : float, default = 4.0
         Controls how quickly normalized overshoots approach 1.
         Rough guideline:
         -  small (≈ 2) → fast saturation, most values near 1
         -  large (> 5) → slower rise, broader dynamic range
+
     ---------------------------------------------------------------------------
     Returns
     ---------------------------------------------------------------------------
@@ -158,10 +170,13 @@ def up_down_asymmetry(runs, theta, squash=4.0):
         ``(mu_up, mu_down)`` — normalized mean overshoot scores for upward and
         downward runs, each ∈ (0, 1]. If no runs of a direction exist, that
         side returns 0.0.
+
     ---------------------------------------------------------------------------
     Example
     ---------------------------------------------------------------------------
-    >>> mu_up, mu_down = up_down_asymmetry(runs, theta=0.1)
+    >>> events, runs = compute_directional_change_events(prices, theta=0.02)
+    >>> runs = attach_OSV_EXT_to_runs(runs, theta=0.02)
+    >>> mu_up, mu_down = up_down_asymmetry(runs, theta=0.02)
     >>> print(mu_up, mu_down)
     0.73, 0.64
     """
@@ -173,12 +188,12 @@ def up_down_asymmetry(runs, theta, squash=4.0):
     if not valid:
         return 0.0, 0.0
 
-    # Extract arrays of overshoots and direction signs
+    # Extract arrays of overshoots (already in units of theta) and direction signs
     osv = np.array([r["OSV_EXT"] for r in valid], dtype=float)
     dirs = np.array([dir_map.get(r.get("type"), 0) for r in valid], dtype=int)
 
-    # Dimensionless overshoot ratios (relative to threshold)
-    rel_osv = np.abs(osv) / theta if theta > 0 else np.abs(osv)
+    # OSV_EXT is ALREADY normalized by theta → use absolute values directly
+    rel_osv = np.abs(osv)
 
     # Separate up and down directions
     up = rel_osv[dirs > 0]
@@ -191,7 +206,7 @@ def up_down_asymmetry(runs, theta, squash=4.0):
         """Smooth exponential mapping to (0, 1]."""
         return 1.0 - np.exp(-x / squash)
 
-    # Apply normalization and clip to valid range
+    # Apply squashing and clip to valid range
     mu_up_norm = squash_fn(mu_up)
     mu_down_norm = squash_fn(mu_down)
 

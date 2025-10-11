@@ -10,8 +10,7 @@ def _normalize_timestamp_units(series: pd.Series, label: str = "") -> pd.Series:
     mask_us = s > 1e14  # microseconds
     mask_ns = s > 1e17  # nanoseconds
     mask_ms = ~(mask_us | mask_ns)
-    n_ms, n_us, n_ns = mask_ms.sum(), mask_us.sum(), mask_ns.sum()
-    print(f"Timestamp units {label:20s}: {n_ms:,} ms | {n_us:,} µs | {n_ns:,} ns")
+    n_us, n_ns = mask_us.sum(), mask_ns.sum()
     if n_us:
         s.loc[mask_us] /= 1_000.0
     if n_ns:
@@ -25,7 +24,6 @@ def _load_symbol(
     symbol = symbol_path.name
     data_folder = symbol_path / interval / range_folder
     if not data_folder.exists():
-        print(f"{symbol}: missing folder {data_folder} → skip")
         return pd.DataFrame()
 
     frames = []
@@ -55,54 +53,47 @@ def _load_symbol(
                 frames.append(df)
 
     if not frames:
-        print(f"{symbol}: no zip files found, skipping")
         return pd.DataFrame()
 
     df = pd.concat(frames, ignore_index=True)
-    print(f"Loaded {symbol}: {len(df):,} hourly rows")
 
-    df["Open Time"] = _normalize_timestamp_units(df["Open Time"], f"{symbol} Open Time")
-    df["Close Time"] = _normalize_timestamp_units(
-        df["Close Time"], f"{symbol} Close Time"
-    )
+    # Normalize timestamps
+    df["Open Time"] = _normalize_timestamp_units(df["Open Time"])
+    df["Close Time"] = _normalize_timestamp_units(df["Close Time"])
 
     df["Open Time"] = pd.to_datetime(df["Open Time"], unit="ms", errors="coerce")
     df["Close Time"] = pd.to_datetime(df["Close Time"], unit="ms", errors="coerce")
 
     df = df.set_index("Open Time").sort_index()
+
+    # Drop duplicates
     if not df.index.is_unique:
-        dups = df.index.duplicated().sum()
-        print(f"{symbol}: {dups:,} duplicate timestamps → dropping")
         df = df[~df.index.duplicated(keep="first")]
 
+    # Ensure hourly frequency
     df = df.asfreq("1h")
 
-    missing_before = df.isna().any(axis=1).sum()
-    if missing_before:
-        print(f"{symbol}: Found {missing_before:,} missing hourly candles → filling...")
+    # Handle missing data
+    if df.isna().any(axis=1).any():
         df = df.ffill()
 
         price_cols = ["Open", "High", "Low", "Close"]
-        df[price_cols] = np.exp(
-            np.log(df[price_cols]).interpolate(method="time", limit_direction="both")
-        )
+        log_prices = np.log(df[price_cols])
+        interpolated = log_prices.interpolate(method="time", limit_direction="both")
+        df[price_cols] = np.exp(interpolated)
 
-        num_cols = df.select_dtypes(include=[np.number]).columns
-        other_cols = num_cols.difference(price_cols)
-        df[other_cols] = df[other_cols].interpolate(
+        other_num_cols = df.select_dtypes(include=[np.number]).columns.difference(
+            price_cols
+        )
+        df[other_num_cols] = df[other_num_cols].interpolate(
             method="time", limit_direction="both"
         )
 
-        still_missing = df.isna().any(axis=1).sum()
-        if still_missing > 0:
+        if df.isna().any(axis=1).any():
             raise ValueError(
-                f"{symbol}: {still_missing} rows remain missing after fill → abort."
+                f"{symbol}: Missing data remains after interpolation → abort."
             )
-        print(f"{symbol}: Missing hours filled successfully.")
-    else:
-        print(f"{symbol}: No missing hourly candles.")
 
-    print(f"{symbol} range: {df.index.min()} → {df.index.max()} | {len(df):,} rows")
     df["Symbol"] = symbol
     return df
 
@@ -111,7 +102,27 @@ def load_all_klines(
     root: Path | str = "data/spot/monthly/klines",
     interval: str = "1h",
     range_folder: str = "2017-01-01_2025-10-04",
+    min_years: float = 4.0,
 ) -> pd.DataFrame:
+    """
+    Load and optionally filter klines data for USDT symbols.
+
+    Parameters
+    ----------
+    root : Path or str
+        Root directory containing symbol folders (e.g., .../klines/BTCUSDT/...).
+    interval : str, default "1h"
+        Candle interval.
+    range_folder : str, default "2017-01-01_2025-10-04"
+        Subfolder name with date range.
+    min_years : float, default 4.0
+        Minimum data duration per symbol (in years). Symbols with less are dropped.
+
+    Returns
+    -------
+    pd.DataFrame
+        Multi-index DataFrame: ["Symbol", "Open Time"].
+    """
     root = Path(root)
     columns = [
         "Open Time",
@@ -135,7 +146,7 @@ def load_all_klines(
             all_dfs.append(df_coin)
 
     if not all_dfs:
-        raise FileNotFoundError(f"No valid symbol data folders found under {root}")
+        raise FileNotFoundError(f"No valid symbol data found under {root}")
 
     df_all = pd.concat(all_dfs, ignore_index=False)
     df_all = (
@@ -144,12 +155,27 @@ def load_all_klines(
         .sort_index()
     )
 
-    print("\n===== FINAL MULTI-SYMBOL SUMMARY =====")
-    symbols = df_all.index.get_level_values("Symbol").unique().tolist()
-    print(f"Shape: {df_all.shape}")
-    print(f"Symbols loaded ({len(symbols)}): {symbols}")
-    print(f"Total hourly rows (all): {len(df_all):,}")
-    print("\nPreview:")
-    print(df_all.head())
+    # Filter by minimum time span
+    if min_years > 0:
+        min_td = pd.Timedelta(days=min_years * 365.25)
+        time_spans = df_all.groupby(level="Symbol").apply(
+            lambda g: g.index.get_level_values("Open Time")[-1]
+            - g.index.get_level_values("Open Time")[0]
+        )
+        valid_symbols = time_spans[time_spans >= min_td].index
+        dropped = (
+            df_all.index.get_level_values("Symbol").unique().difference(valid_symbols)
+        )
 
+        if len(dropped) > 0:
+            print(f"\nDropped {len(dropped)} symbols with < {min_years} years of data:")
+            for sym in sorted(dropped):
+                span_days = time_spans.get(sym, pd.Timedelta(0)).days
+                print(f"  {sym}: {span_days} days")
+
+        df_all = df_all[df_all.index.get_level_values("Symbol").isin(valid_symbols)]
+
+    # Final summary (only shape & symbols)
+    symbols = df_all.index.get_level_values("Symbol").unique()
+    print(f"\nLoaded {len(symbols)} symbols | Shape: {df_all.shape}")
     return df_all
