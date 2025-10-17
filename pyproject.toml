@@ -5,15 +5,20 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "curl-cffi>=0.13.0",
+    "dcor>=0.6",
     "deap",
     "ipykernel>=6.30.1",
     "ipywidgets>=8.1.7",
     "matplotlib>=3.10.6",
     "nbformat>=5.10.4",
+    "pacmap>=0.8.0",
     "pandas>=2.3.3",
     "plotly>=6.3.0",
     "pydantic>=2.11.9",
     "python-binance>=1.0.29",
+    "scikit-learn>=1.7.2",
+    "scipy>=1.16.2",
 ]
 
 [tool.uv.sources]
